@@ -28,14 +28,21 @@ class AppContextNameOId(DLMSObjectIdentifier):
 
     @classmethod
     def from_bytes(cls, _bytes):
+
         data = bytearray(_bytes)
         tag = data.pop(0)
+        if tag != DLMSObjectIdentifier.tag:
+            raise ValueError('Tag of {tag} is not a valid tag for '
+                             'ObjectIdentifiers')
+
         length = data.pop(0)
         if length != len(data):
             raise ValueError('Length of data is not as length byte')
+
         context_id = data[-1]
         if context_id not in AppContextNameOId.valid_context_ids:
             raise ValueError(f'context_id of {context_id} is not valid')
+
         total_prefix = bytes(data[:-1])
         print(total_prefix)
         print((DLMSObjectIdentifier.prefix +
