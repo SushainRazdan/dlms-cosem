@@ -1,5 +1,6 @@
 from dlms_cosem.ber import BER
 
+
 class DLMSObjectIdentifier:
     """
     The DLMS Association has been assigned a prefix for all of its OBJECT
@@ -9,7 +10,7 @@ class DLMSObjectIdentifier:
     prefix = b'\x60\x85\x74\x05\x08'
 
 
-class AppContextNameOId(DLMSObjectIdentifier):
+class AppContextName(DLMSObjectIdentifier):
     """
     This defines how to reference objects in the meter and if ciphered APDU:s
     are allowed.
@@ -32,26 +33,23 @@ class AppContextNameOId(DLMSObjectIdentifier):
         data = bytearray(_bytes)
         tag = data.pop(0)
         if tag != DLMSObjectIdentifier.tag:
-            raise ValueError('Tag of {tag} is not a valid tag for '
-                             'ObjectIdentifiers')
+            raise ValueError(f'Tag of {tag} is not a valid tag for '
+                             f'ObjectIdentifiers')
 
         length = data.pop(0)
         if length != len(data):
             raise ValueError('Length of data is not as length byte')
 
         context_id = data[-1]
-        if context_id not in AppContextNameOId.valid_context_ids:
+        if context_id not in AppContextName.valid_context_ids:
             raise ValueError(f'context_id of {context_id} is not valid')
 
         total_prefix = bytes(data[:-1])
-        print(total_prefix)
-        print((DLMSObjectIdentifier.prefix +
-                            bytes([AppContextNameOId.app_context])))
         if total_prefix != (DLMSObjectIdentifier.prefix +
-                            bytes([AppContextNameOId.app_context])):
+                            bytes([AppContextName.app_context])):
             raise ValueError(f'Static part of object id it is not correct'
                              f' according to DLMS: {total_prefix}')
-        settings_dict = AppContextNameOId.get_settings_by_context_id(context_id)
+        settings_dict = AppContextName.get_settings_by_context_id(context_id)
         return cls(**settings_dict)
 
     def to_bytes(self):
@@ -79,10 +77,113 @@ class AppContextNameOId(DLMSObjectIdentifier):
         return settings_dict.get(context_id)
 
     def __repr__(self):
-        return (f'AppContextNameOId \n'
+        return (f'AppContextName \n'
                 f'\t\t logical_name_refs = {self.logical_name_refs} \n'
                 f'\t\t ciphered_apdus = {self.ciphered_apdus}')
 
+
+class MechanismName(DLMSObjectIdentifier):
+    app_context = 2
+    valid_mechanism_ids = [0, 1, 2, 3, 4, 5, 6, 7]  #TODO: just check .keys(
+
+    # TODO: Don't like this but can't be bothered to come up with other way now.
+    mechanism_names_by_id = {
+        0: 'none',  # lowest level
+        1: 'lls',  # low level security
+        2: 'hls',  # high level security
+        3: 'hls-md5',  # HLS with MD5 , not recommended for new meters
+        4: 'hls-sha1',  # HLS with SHA1 , not recommended for new meters
+        5: 'hls-gmac',
+        6: 'hls-sha256',
+        7: 'hls-ecdsa',
+    }
+    id_by_mechanism_names = {
+        'none': 0,  # lowest level
+        'lls': 1,  # low level security
+        'hls': 2,  # high level security
+        'hls-md5': 3,  # HLS with MD5 , not recommended for new meters
+        'hls-sha1': 4,  # HLS with SHA1 , not recommended for new meters
+        'hls-gmac': 5,
+        'hls-sha256': 6,
+        'hls-ecdsa': 7,
+    }
+
+    def __init__(self, mechanism_name='none'):
+        self.mechanism_name = mechanism_name
+        self.mechanism_id = self.id_by_mechanism_names[mechanism_name]
+
+    @classmethod
+    def from_bytes(cls, _bytes):
+        """
+        Apparently the data in mechanism name is not encoded in BER.
+        """
+        #TODO: this is a decoding action of BER. Checks should be moved there.
+        data = bytearray(_bytes)
+
+        mechanism_id = data[-1]
+        if mechanism_id not in MechanismName.valid_mechanism_ids:
+            raise ValueError(f'mechanism_id of {mechanism_id} is not valid')
+
+        total_prefix = bytes(data[:-1])
+        if total_prefix != (DLMSObjectIdentifier.prefix +
+                            bytes([MechanismName.app_context])):
+            raise ValueError(f'Static part of object id it is not correct'
+                             f' according to DLMS: {total_prefix}')
+
+        return cls(
+            mechanism_name=MechanismName.mechanism_names_by_id[mechanism_id]
+        )
+
+    def to_bytes(self):
+        total_data = self.prefix + bytes([self.app_context, self.mechanism_id])
+        return total_data
+
+    def __repr__(self):
+        return self.mechanism_name
+
+
+
+
+
+
+class AuthFunctionalUnit:
+    """
+    Consists of 2 bytes. First byte encodes the number of unused bytes in
+    the second byte.
+    So really you just need to set the last bit to 0 to use authentication.
+    In the green book they use the 0x07 as first byte and 0x80 as last byte.
+    We will use this to not make it hard to look up.
+    It is a bit weirdly defined in the Green Book. I interpret is as if the data
+    exists it is the functional unit 0 (authentication). In examples in the
+    Green Book they set 0x070x80 as exists.
+
+    """
+
+    def __init__(self, authentication=False):
+        self.authentication = authentication
+
+    @classmethod
+    def from_bytes(cls, _bytes):
+        if len(_bytes) != 2:
+            raise ValueError(f'Authentication Functional Unit data should by 2 '
+                             f'bytes. Got: {_bytes}')
+        last_byte = _bytes[-1]
+        # should I check anything?
+        return cls(authentication=True)
+
+    def to_bytes(self):
+        if self.authentication:
+            return b'\x07\x80'
+        else:
+            # when not using authentication this the sender-acse-requirements
+            # should not be in the data.
+            return None
+
+    def __repr__(self):
+        if self.authentication:
+            return 'Authentication'
+        else:
+            return 'No Authentication'
 
 
 class AARQAPDU():
@@ -111,11 +212,13 @@ class AARQAPDU():
       user_information [30] EXPLICIT Association_information OPTIONAL
     }
     """
-    tag = 96  # Application 0 = 60H = 96
+
+    tag = 0x60  # Application 0 = 60H = 96
     # TODO: Use NamedTuple
     tags = {
-        160: ('protocol_version', None),  # Context specific, constructed? 0
-        161: ('application_context_name', AppContextNameOId),  # Context specific, constructed 1
+        0x80: ('protocol_version', None),  # Context specific, constructed? 0
+        0xa1: ('application_context_name', AppContextName),
+    # Context specific, constructed 1
         162: ('called_ap_title', None),
         163: ('called_ae_qualifier', None),
         164: ('called_ap_invocation_identifier', None),
@@ -124,11 +227,11 @@ class AARQAPDU():
         167: ('calling_ae_qualifier', None),
         168: ('calling_ap_invocation_identifier', None),
         169: ('calling_ae_invocation_identifier', None),
-        170: ('sender_acse_requirements', None),
-        171: ('mechanism_name', None),
-        172: ('calling_authentication_value', None),
-        189: ('implementation_information', None),
-        190: ('user_information', None)  # Context specific, constructed 30
+        0x8a: ('sender_acse_requirements', AuthFunctionalUnit),
+        0x8b: ('mechanism_name', MechanismName),
+        0xac: ('calling_authentication_value', None),
+        0xbd: ('implementation_information', None),
+        0xbe: ('user_information', None)  # Context specific, constructed 30
     }
 
     def __init__(self,
@@ -160,7 +263,7 @@ class AARQAPDU():
         self.calling_ap_invocation_identifier = calling_ap_invocation_identifier
         self.calling_ae_invocation_identifier = calling_ae_invocation_identifier
 
-        # if this is 1 authentication is used.
+        # if this is present authentication is used.
         self.sender_acse_requirements = sender_acse_requirements
         # these 2should not be present if authentication is not used.
         self.mechanism_name = mechanism_name
@@ -219,7 +322,7 @@ class AARQAPDU():
 
     def to_bytes(self):
         # if we created the object from bytes we can just return the same bytes
-        #if self._raw_bytes is not None:
+        # if self._raw_bytes is not None:
         #    return self._raw_bytes
         aarq_data = bytearray()
         # default value of protocol_version is 1. Only decode if other than 1
@@ -265,30 +368,30 @@ class AARQAPDU():
             )
         if self.sender_acse_requirements is not None:
             aarq_data.extend(
-                BER.encode(170, self.sender_acse_requirements)
+                BER.encode(0x8a, self.sender_acse_requirements.to_bytes())
             )
         if self.mechanism_name is not None:
             aarq_data.extend(
-                BER.encode(171, self.mechanism_name)
+                BER.encode(0x8b, self.mechanism_name.to_bytes())
             )
         if self.calling_authentication_value is not None:
             aarq_data.extend(
-                BER.encode(172, self.calling_authentication_value)
+                BER.encode(0xac, self.calling_authentication_value)
             )
         if self.implementation_information is not None:
             aarq_data.extend(
-                BER.encode(189, self.implementation_information)
+                BER.encode(0xbd, self.implementation_information)
             )
         if self.user_information is not None:
             aarq_data.extend(
-                BER.encode(190, self.user_information)
+                BER.encode(0xbe, self.user_information)
             )
+        # TODO: UPDATE THE ENCODING TAGS!
 
         return BER.encode(self.tag, bytes(aarq_data))
 
         # TODO: make BER.encode handle bytes or bytearray to save code space.
         # TODO: CAn we use an orderedDict to loopt through all elemetns of the aarq to be transformed.
-
 
         # TODO: Add encoding of all values from ground up.
 
@@ -310,6 +413,7 @@ class AARQAPDU():
             f'\t calling_ae_invocation_identifier = '
             f'{self.calling_ae_invocation_identifier} \n'
             f'\t sender_acse_requirements = {self.sender_acse_requirements} \n'
+            f'\t mechanism_name: {self.mechanism_name} \n'
             f'\t calling_authentication_value = '
             f'{self.calling_authentication_value} \n'
             f'\t implementation_information = '

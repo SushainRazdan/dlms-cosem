@@ -11,6 +11,9 @@ class BER:
         assert isinstance(data, bytes)
 
         length = len(data)
-        return bytes([tag, length]) + data
+        if length == 0:
+            return b''
+        else:
+            return bytes([tag, length]) + data
 
 
