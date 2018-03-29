@@ -1,5 +1,239 @@
 from dlms_cosem.ber import BER
 
+"""
+The AARQ, AARE has alot of functions and variations. Most of the classes here
+are not perfect. I have just tried to get all cases down. I will start making
+the classes better when I start working on the client. Then I will better see
+what a good API would be.
+"""
+
+class Conformance:
+    def __init__(self, _bytes):
+        self._bytes = _bytes
+
+    @classmethod
+    def from_bytes(cls, _bytes):
+        return cls(_bytes)
+
+    def to_bytes(self):
+        return self._bytes
+
+    def __repr__(self):
+        return f'Conformance: {self._bytes}'
+
+class InitiateRequest:
+    """
+    InitiateRequest ::= SEQUENCE {
+    dedicated-key: OCTET STRING OPTIONAL
+    response-allowed: BOOLEAN DEFAULT TRUE
+    proposed-quality-of-service: IMPLICIT Integer8 OPTIONAL
+    proposed-dlms-version-number: Integer8  # Always 6?
+    proposed-conformance: Conformance
+    client-max-receive-pdu-size: Unsigned16
+    }
+
+    """
+
+    tag = 0x01  # initiateRequest XDLMS-APDU Choice.
+
+    object_map = [
+        {'attr': 'dedicated_key', 'encoding': 'x-ads', 'optional': True,
+         'default': None, 'class_ref': 'bytes', 'length': None},
+        {'attr': 'response_allowed', 'encoding': 'x-ads', 'optional': False,
+         'default': True, 'class_ref': 'bool', 'length': 1},
+        {'attr': 'proposed_quality_of_service', 'encoding': 'x-ads', 'optional': False,
+         'default': None, 'class_ref': 'int', 'length': 1},
+        {'attr': 'proposed_dlms_version_number', 'encoding': 'x-ads', 'optional': False,
+         'default': None, 'class_ref': 'int', 'length': 1},
+        {'attr': 'proposed_conformance', 'encoding': 'ber', 'optional': False,
+         'default': None, 'class_ref': Conformance, 'length': 7},  # Might be 6 over HDLC because of compbility with old version.
+        {'attr': 'client_max_receive_pdu_size', 'encoding': 'x-ads', 'optional': False,
+         'default': None, 'class_ref': 'int', 'length': 2},
+
+
+    ]
+
+    # TODO: Cannot be default and optional at the same time!
+
+    def __init__(self,
+                 proposed_conformance,
+                 client_max_receive_pdu_size,
+                 proposed_quality_of_service,
+                 proposed_dlms_version_number=6,
+                 response_allowed=True,
+                 dedicated_key=None):
+
+        self.proposed_conformance = proposed_conformance
+        self.client_max_receive_pdu_size = client_max_receive_pdu_size
+        self.proposed_quality_of_service = proposed_quality_of_service
+        self.proposed_dlms_version_number = proposed_dlms_version_number
+        self.response_allowed = response_allowed
+        self.dedicated_key = dedicated_key
+
+    @classmethod
+    def from_bytes(cls, _bytes: bytes):
+        # There is weird decoding here since it is mixed X-ADS and BER....
+        data = bytearray(_bytes)
+        apdu_tag = data.pop(0)
+        if apdu_tag != 0x01:
+            raise ValueError(f'Data is not a InitiateReques APDU, got apdu tag {apdu_tag}')
+        object_dict = dict()
+
+        for decoding_rule in InitiateRequest.object_map:
+            is_used = True
+            is_default = False
+            if decoding_rule['optional']:
+                tag = data.pop(0)  # get the first byte in the array
+                if tag == 0x00:
+                    # 0x00 indicates that the optinal element is not used.
+                    is_used = False
+                elif tag == 0x01:
+                    # 0x01 indicates that the optional elemnt is used.
+                    is_used =True
+                else:
+                    raise ValueError(
+                        f'Not possible to byte: {tag} to be other than 0x00 or '
+                        f'0x01 when optional is set.')
+            if decoding_rule['default'] is not None:
+                tag = data.pop(0)  # get the first byte in the array
+                if tag == 0x00:
+                    # 0x00 indicates that the default value is used.
+                    is_default = True
+                elif tag == 0x01:
+                    # 0x01 indicates that the default value is not used and
+                    # we need to look for the real value.
+                    is_default = False
+                else:
+                    raise ValueError(
+                        f'Not possible to byte: {tag} to be other than 0x00 or '
+                        f'0x01 when default is set.')
+            if is_default:
+                object_dict[decoding_rule['attr']] = decoding_rule['default']
+                continue
+            if not is_used:
+                object_dict[decoding_rule['attr']] = None
+                continue
+
+            object_data = data[:decoding_rule['length']]
+            data = data[decoding_rule['length']:]
+
+            # TODO: this is not nice
+            if decoding_rule['class_ref'] == 'int':
+                object_instance = int.from_bytes(object_data, 'big')
+            elif decoding_rule['class_ref'] == 'bool':
+                object_instance = bool(object_data)
+            elif decoding_rule['class_ref'] == 'str':
+                object_instance = str(object_data)
+            elif decoding_rule['class_ref'] == 'bytes':
+                object_instance = bytes(object_data)
+            else:
+                object_instance = decoding_rule['class_ref'].from_bytes(object_data)
+            object_dict[decoding_rule['attr']] = object_instance
+
+        print(object_dict)
+        print(f'data: {data}')
+
+        return cls(**object_dict)
+
+    def to_bytes(self):
+        _bytes = bytearray()
+        for decoding_rule in self.object_map:
+            object_value = self.__getattribute__(decoding_rule['attr'])
+            # is the object used?
+            if object_value is None and decoding_rule['optional'] is True:
+                object_bytes = b'\x00'
+
+            # is the object the default value?
+            elif object_value == decoding_rule['default']:
+                object_bytes = b'\x00'
+
+            else:
+                if isinstance(object_value, int):
+                    object_bytes = object_value.to_bytes(decoding_rule['length'], 'big')
+                elif isinstance(object_value, bytes):
+                    object_bytes = object_value
+                elif isinstance(object_value, bool):
+                    if object_value:
+                        object_bytes = b'\x01'
+                    else:
+                        object_bytes = b'\x00'
+                elif isinstance(object_value, str):
+                    object_bytes = object_value.encode()
+                else:
+                    object_bytes = object_value.to_bytes()
+
+            if object_value is not None and decoding_rule['optional'] is True:
+                # should add 0x01 infront of the data
+                object_bytes = b'\x01' + object_bytes
+
+            _bytes.extend(object_bytes)
+
+        return b'\x01' + bytes(_bytes)
+
+    def __repr__(self):
+        return (f'\n\t\t\tdedicated key = {self.dedicated_key}, '
+                f'\n\t\t\tresponse_allowed = {self.response_allowed}, '
+                f'\n\t\t\tproposed_quality_of_service = {self.proposed_quality_of_service}, '
+                f'\n\t\t\tproposed_dlms_version_number = {self.proposed_dlms_version_number}, '
+                f'\n\t\t\tproposed_conformance = {self.proposed_conformance} '
+                f'\n\t\t\tclient_max_recieve_pdu_size: {self.client_max_receive_pdu_size}')
+
+
+class UserInformation:
+    tag = 0x04  # is encoded as an octetstring
+
+    def __init__(self, initiate_request):
+        self.initiate_request = initiate_request
+
+        # TODO: when using ciphered apdus we will get other apdus. (33 64) global or dedicated cipered iniitate requests
+
+    @classmethod
+    def from_bytes(cls, _bytes):
+        tag, length, data = BER.decode(_bytes)
+        if tag != 0x04:
+            raise ValueError(f'The tag for UserInformation data should be 0x04'
+                             f'not {tag}')
+
+        initiate_request = InitiateRequest.from_bytes(data)
+
+        return cls(initiate_request=initiate_request)
+
+    def to_bytes(self):
+        return BER.encode(0x04, self.initiate_request.to_bytes())
+
+    def __repr__(self):
+        return f'\n\t\tinitiate_request = {self.initiate_request}'
+
+
+class OctetString:
+
+    # TODO: Make it so that if there is no object to parse, dont make an object
+    # When adding Octetstring in the dict for parsing the AARQ.
+
+    def __init__(self, data: bytes):
+        self.data = data
+        self.empty = False
+        if len(data) == 0:
+            self.empty = True
+
+
+    @classmethod
+    def from_bytes(cls, _bytes: bytes):
+        tag, length, data = BER.decode(_bytes)
+        if tag != 4:
+            raise ValueError(f'tag {tag} is not for Octet String (4)')
+
+    def to_bytes(self):
+        if self.empty:
+            return b''
+        else:
+            return BER.encode(4, self.data)
+
+    def __repr__(self):
+        return f'{self.data}'
+
+
+
 
 class DLMSObjectIdentifier:
     """
@@ -29,16 +263,11 @@ class AppContextName(DLMSObjectIdentifier):
 
     @classmethod
     def from_bytes(cls, _bytes):
+        tag, length, data = BER.decode(_bytes)
 
-        data = bytearray(_bytes)
-        tag = data.pop(0)
         if tag != DLMSObjectIdentifier.tag:
             raise ValueError(f'Tag of {tag} is not a valid tag for '
                              f'ObjectIdentifiers')
-
-        length = data.pop(0)
-        if length != len(data):
-            raise ValueError('Length of data is not as length byte')
 
         context_id = data[-1]
         if context_id not in AppContextName.valid_context_ids:
@@ -117,14 +346,13 @@ class MechanismName(DLMSObjectIdentifier):
         """
         Apparently the data in mechanism name is not encoded in BER.
         """
-        #TODO: this is a decoding action of BER. Checks should be moved there.
-        data = bytearray(_bytes)
 
-        mechanism_id = data[-1]
+        mechanism_id = _bytes[-1]
+
         if mechanism_id not in MechanismName.valid_mechanism_ids:
             raise ValueError(f'mechanism_id of {mechanism_id} is not valid')
 
-        total_prefix = bytes(data[:-1])
+        total_prefix = bytes(_bytes[:-1])
         if total_prefix != (DLMSObjectIdentifier.prefix +
                             bytes([MechanismName.app_context])):
             raise ValueError(f'Static part of object id it is not correct'
@@ -140,6 +368,44 @@ class MechanismName(DLMSObjectIdentifier):
 
     def __repr__(self):
         return self.mechanism_name
+
+
+class AuthenticationValue:
+    """
+    Holds "password" in the AARQ and AARE
+    Can either hold a charstring or a bitstring
+    """
+
+    password_types = ['chars', 'bits']
+
+    def __init__(self, password=b'', _type='chars'):
+        self.password = password
+        if _type in self.password_types:
+            self._type = _type
+
+        else:
+            raise ValueError(f'{_type} is not a valid auth value type')
+
+    def __repr__(self):
+        return f'{self._type}: {self.password}'
+
+    @classmethod
+    def from_bytes(cls, _bytes):
+        tag, length, data = BER.decode(_bytes)
+        if tag == 0x80:
+            password_type = 'chars'
+        elif tag == 0x80:
+            password_type = 'bits'
+        else:
+            raise ValueError(f'Tag {tag} is not vaild for password')
+
+        return cls(password=data, _type=password_type)
+
+    def to_bytes(self):
+        if self._type == 'chars':
+            return BER.encode(0x80, self.password)
+        elif self._type == 'bits':
+            return BER.encode(0x81, self.password)
 
 
 
@@ -181,9 +447,9 @@ class AuthFunctionalUnit:
 
     def __repr__(self):
         if self.authentication:
-            return 'Authentication'
+            return 'Authentication = True'
         else:
-            return 'No Authentication'
+            return 'Authentication = False'
 
 
 class AARQAPDU():
@@ -229,9 +495,9 @@ class AARQAPDU():
         169: ('calling_ae_invocation_identifier', None),
         0x8a: ('sender_acse_requirements', AuthFunctionalUnit),
         0x8b: ('mechanism_name', MechanismName),
-        0xac: ('calling_authentication_value', None),
+        0xac: ('calling_authentication_value', AuthenticationValue),
         0xbd: ('implementation_information', None),
-        0xbe: ('user_information', None)  # Context specific, constructed 30
+        0xbe: ('user_information', UserInformation)  # Context specific, constructed 30
     }
 
     def __init__(self,
@@ -297,6 +563,7 @@ class AARQAPDU():
 
         # use the data in tags to go through the bytes and create objects.
         while True:
+            # TODO: this does not take into account when defining objects in dict and not using them.
             object_tag = aarq_data.pop(0)
             object_desc = AARQAPDU.tags.get(object_tag, None)
             if object_desc is None:
@@ -376,7 +643,7 @@ class AARQAPDU():
             )
         if self.calling_authentication_value is not None:
             aarq_data.extend(
-                BER.encode(0xac, self.calling_authentication_value)
+                BER.encode(0xac, self.calling_authentication_value.to_bytes())
             )
         if self.implementation_information is not None:
             aarq_data.extend(
@@ -384,7 +651,7 @@ class AARQAPDU():
             )
         if self.user_information is not None:
             aarq_data.extend(
-                BER.encode(0xbe, self.user_information)
+                BER.encode(0xbe, self.user_information.to_bytes())
             )
         # TODO: UPDATE THE ENCODING TAGS!
 
